@@ -1,0 +1,490 @@
+@page "/"
+@implements IDisposable
+@inject Monitoring.Blazor.Services.MonitorStateService MonitorState
+@inject IJSRuntime JS
+@inject NavigationManager NavigationManager
+@using Monitoring.Blazor.Models
+@using Monitoring.Blazor.Services
+
+<PageTitle>Test</PageTitle>
+
+<h1>Test</h1>
+
+<div class="mb-3 d-flex gap-2 flex-wrap">
+    <button class="btn @(CurrentHost == DashboardView ? "btn-primary" : "btn-outline-primary")" @onclick="ShowDashboard">Dashboard</button>
+    <button class="btn btn-outline-secondary" @onclick="ToggleAutoRefresh">
+        Auto Refresh: @(AutoRefresh ? "On" : "Off")
+    </button>
+    <button class="btn btn-outline-primary" @onclick="ManualRefresh">Refresh Now</button>
+    <button class="btn btn-outline-secondary" @onclick="ToggleAlertPanel">
+        Alert Rules
+    </button>
+    @foreach (var host in Hosts)
+    {
+        <button class="btn @(CurrentHost == host.Info.Hostname ? "btn-primary" : "btn-outline-secondary")"
+                disabled="@(!host.IsOnline)"
+                @onclick="() => SelectHost(host.Info.Hostname)">
+            <span class="status-dot @(host.IsOnline ? "status-online" : "status-offline")"></span>@host.Info.Hostname
+        </button>
+    }
+</div>
+
+@if (CurrentHost == DashboardView)
+{
+    <div class="row g-3 mb-3">
+        <div class="col-12 col-md-4">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="metric-label">Hosts Online</div>
+                    <div class="metric-value">@Hosts.Count(x => x.IsOnline).ToString("N0")</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-md-4">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="metric-label">Hosts Warning</div>
+                    <div class="metric-value">@Hosts.Count(x => IsWarning(x.Info)).ToString("N0")</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-md-4">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="metric-label">Hosts Critical</div>
+                    <div class="metric-value">@Hosts.Count(x => IsCritical(x.Info)).ToString("N0")</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    @if (ShowAlertPanel)
+    {
+        <div class="card mb-3">
+            <div class="card-header"><strong>Alert Rules</strong></div>
+            <div class="card-body">
+                <div class="row g-2">
+                    <div class="col-12 col-md-2">
+                        <label class="form-label">Enabled</label>
+                        <input type="checkbox" class="form-check-input ms-2" @bind="AlertSettings.Enabled" />
+                    </div>
+                    <div class="col-12 col-md-2">
+                        <label class="form-label">CPU %</label>
+                        <input class="form-control" type="number" @bind="AlertSettings.CpuThreshold" />
+                    </div>
+                    <div class="col-12 col-md-2">
+                        <label class="form-label">CPU Minutes</label>
+                        <input class="form-control" type="number" @bind="AlertSettings.CpuDurationMinutes" />
+                    </div>
+                    <div class="col-12 col-md-2">
+                        <label class="form-label">RAM %</label>
+                        <input class="form-control" type="number" @bind="AlertSettings.RamThreshold" />
+                    </div>
+                    <div class="col-12 col-md-2">
+                        <label class="form-label">Disk %</label>
+                        <input class="form-control" type="number" @bind="AlertSettings.DiskThreshold" />
+                    </div>
+                    <div class="col-12 col-md-2">
+                        <label class="form-label">Cooldown (min)</label>
+                        <input class="form-control" type="number" @bind="AlertSettings.CooldownMinutes" />
+                    </div>
+                    <div class="col-12 col-md-2">
+                        <label class="form-label">Recovery</label>
+                        <input type="checkbox" class="form-check-input ms-2" @bind="AlertSettings.RecoveryEnabled" />
+                    </div>
+                    <div class="col-12 col-md-2">
+                        <label class="form-label">Recovery Cooldown</label>
+                        <input class="form-control" type="number" @bind="AlertSettings.RecoveryCooldownMinutes" />
+                    </div>
+                    <div class="col-12 col-md-2">
+                        <label class="form-label">Anomaly</label>
+                        <input type="checkbox" class="form-check-input ms-2" @bind="AlertSettings.AnomalyEnabled" />
+                    </div>
+                    <div class="col-12 col-md-2">
+                        <label class="form-label">Window</label>
+                        <input class="form-control" type="number" @bind="AlertSettings.AnomalyWindow" />
+                    </div>
+                    <div class="col-12 col-md-2">
+                        <label class="form-label">StdDev</label>
+                        <input class="form-control" type="number" step="0.1" @bind="AlertSettings.AnomalyStdDev" />
+                    </div>
+                    <div class="col-12 col-md-2">
+                        <label class="form-label">Min Delta</label>
+                        <input class="form-control" type="number" step="0.1" @bind="AlertSettings.AnomalyMinDelta" />
+                    </div>
+                    <div class="col-12 col-md-2">
+                        <label class="form-label">Anomaly Cooldown</label>
+                        <input class="form-control" type="number" @bind="AlertSettings.AnomalyCooldownMinutes" />
+                    </div>
+                </div>
+                <div class="mt-3 d-flex gap-2">
+                    <button class="btn btn-primary" @onclick="SaveAlertSettings">Save</button>
+                    <button class="btn btn-outline-secondary" @onclick="LoadAlertSettings">Reload</button>
+                </div>
+            </div>
+        </div>
+    }
+
+    <div class="row g-3">
+        @foreach (var host in Hosts)
+        {
+            var cpu = host.Info.Dynamic.CpuInfo.Usage;
+            var mem = host.Info.Dynamic.MemoryInfo.Usage;
+
+            <div class="col-12 col-md-6 col-xl-4">
+                <div class="card h-100 host-card @(host.IsOnline ? "" : "host-offline")"
+                     role="button"
+                     tabindex="0"
+                     @onclick="() => SelectHost(host.Info.Hostname)">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <h5 class="card-title mb-0">@host.Info.Hostname</h5>
+                            <span class="badge @(host.IsOnline ? "text-bg-success" : "text-bg-danger")">@(host.IsOnline ? "Online" : "Offline")</span>
+                        </div>
+                        <p class="text-muted mt-2 mb-1">@host.Info.Ip</p>
+                        <div>CPU @cpu.ToString("0.0")%</div>
+                        <div class="progress mb-2"><div class="progress-bar bg-danger" style="width: @($"{cpu}%")"></div></div>
+                        <div>MEM @mem.ToString("0.0")%</div>
+                        <div class="progress"><div class="progress-bar bg-info" style="width: @($"{mem}%")"></div></div>
+                        <div class="mt-3 text-end">
+                            <span class="btn btn-sm btn-outline-primary">View Details</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        }
+    </div>
+}
+else if (SelectedHost is not null)
+{
+    var info = SelectedHost.Info;
+    var history = Histories.GetValueOrDefault(info.Hostname);
+
+    <div class="card mb-3">
+        <div class="card-header"><strong>@info.Hostname</strong> Server Status</div>
+        <div class="card-body">
+            <div class="row text-center g-3">
+                <div class="col-12 col-md-4">
+                    <div class="gauge-wrap"><canvas id="cpuGauge"></canvas></div>
+                    <div class="mt-2">CPU: <strong>@info.Dynamic.CpuInfo.Usage.ToString("0.0")%</strong></div>
+                </div>
+                <div class="col-12 col-md-4">
+                    <div class="gauge-wrap"><canvas id="memoryGauge"></canvas></div>
+                    <div class="mt-2">Memory: <strong>@info.Dynamic.MemoryInfo.Usage.ToString("0.0")%</strong></div>
+                </div>
+                <div class="col-12 col-md-4">
+                    <div class="gauge-wrap"><canvas id="diskGauge"></canvas></div>
+                    <div class="mt-2">Disk: <strong>@info.Dynamic.DiskInfo.Percent.ToString("0.0")%</strong></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-3 mb-3">
+        <div class="col-12 col-xl-6">
+            <div class="card h-100">
+                <div class="card-header"><strong>Network Status Chart</strong></div>
+                <div class="card-body chart-wrap">
+                    <canvas id="networkChart"></canvas>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-xl-6">
+            <div class="card h-100">
+                <div class="card-header"><strong>Resource Chart</strong></div>
+                <div class="card-body chart-wrap">
+                    <canvas id="resourceChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header"><strong>@info.Hostname</strong> Details</div>
+        <div class="card-body">
+            <div class="row">
+                <div class="col-12 col-md-6">
+                    <table class="table table-sm detail-table">
+                        <tbody>
+                        <tr><td>Status</td><td>@(info.Status?.ToString() ?? "-")</td></tr>
+                        <tr><td>Host</td><td>@info.Hostname</td></tr>
+                        <tr><td>IP</td><td>@info.Ip</td></tr>
+                        <tr><td>OS</td><td>@info.Os</td></tr>
+                        <tr><td>CPU</td><td>@info.Dynamic.CpuInfo.Usage.ToString("0.0")%</td></tr>
+                        <tr><td>Memory</td><td>@info.Dynamic.MemoryInfo.Usage.ToString("0.0")%</td></tr>
+                        <tr><td>Disk</td><td>@info.Dynamic.DiskInfo.Percent.ToString("0.0")%</td></tr>
+                        <tr><td>Disk Used</td><td>@ToGb((long)info.Dynamic.DiskInfo.Total - (long)info.Dynamic.DiskInfo.Free).ToString("0.00") GB</td></tr>
+                        <tr><td>Disk Total</td><td>@ToGb((long)info.Dynamic.DiskInfo.Total).ToString("0.00") GB</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="col-12 col-md-6">
+                    <table class="table table-sm detail-table">
+                        <thead><tr><th>Time</th><th>TX Mbps</th><th>RX Mbps</th><th>CPU</th><th>MEM</th></tr></thead>
+                        <tbody>
+                        @if (history is not null)
+                        {
+                            foreach (var point in history.Points.TakeLast(12).Reverse())
+                            {
+                                <tr>
+                                    <td>@point.TimeLabel</td>
+                                    <td>@point.Tx.ToString("0.000")</td>
+                                    <td>@point.Rx.ToString("0.000")</td>
+                                    <td>@point.Cpu.ToString("0.0")%</td>
+                                    <td>@point.Memory.ToString("0.0")%</td>
+                                </tr>
+                            }
+                        }
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+else
+{
+    <p>Host data not found.</p>
+}
+
+@code {
+    private const string DashboardView = "DASHBOARD";
+    private readonly TimeSpan _offlineThreshold = TimeSpan.FromSeconds(15);
+    private PeriodicTimer? _refreshTimer;
+    private CancellationTokenSource? _timerCts;
+    private List<HostState> Hosts { get; set; } = [];
+    private Dictionary<string, HistorySeries> Histories { get; } = new(StringComparer.OrdinalIgnoreCase);
+    private string CurrentHost { get; set; } = DashboardView;
+    private bool AutoRefresh { get; set; } = true;
+    private bool ShowAlertPanel { get; set; } = false;
+    private AlertSettings AlertSettings { get; set; } = new();
+    private HttpClient? _http;
+    private bool _settingsLoaded;
+    private HostState? SelectedHost =>
+        Hosts.FirstOrDefault(x => string.Equals(x.Info.Hostname, CurrentHost, StringComparison.OrdinalIgnoreCase));
+
+    protected override async Task OnInitializedAsync()
+    {
+        MonitorState.Changed += OnStateChanged;
+        _http = new HttpClient { BaseAddress = new Uri(NavigationManager.BaseUri) };
+        await LoadAlertSettings();
+        RefreshSnapshot();
+        StartRefreshLoop();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_settingsLoaded)
+        {
+            try
+            {
+                AutoRefresh = await JS.InvokeAsync<bool>("monitorSettings.get", "autoRefresh", true);
+                _settingsLoaded = true;
+                StateHasChanged();
+            }
+            catch
+            {
+                return;
+            }
+        }
+
+        if (CurrentHost == DashboardView || SelectedHost is null)
+        {
+            return;
+        }
+
+        bool initialized;
+        try
+        {
+            initialized = await JS.InvokeAsync<bool>("monitorCharts.init");
+        }
+        catch
+        {
+            return;
+        }
+        if (!initialized)
+        {
+            return;
+        }
+
+        await PushChartDataAsync(SelectedHost.Info.Hostname);
+    }
+
+    private void OnStateChanged()
+    {
+        InvokeAsync(() =>
+        {
+            RefreshSnapshot();
+            StateHasChanged();
+        });
+    }
+
+    private void StartRefreshLoop()
+    {
+        _timerCts = new CancellationTokenSource();
+        _refreshTimer = new PeriodicTimer(TimeSpan.FromSeconds(5));
+
+        _ = Task.Run(async () =>
+        {
+            while (_refreshTimer is not null && await _refreshTimer.WaitForNextTickAsync(_timerCts.Token))
+            {
+                if (!AutoRefresh)
+                {
+                    continue;
+                }
+
+                await InvokeAsync(() =>
+                {
+                    RefreshSnapshot();
+                    StateHasChanged();
+                });
+            }
+        });
+    }
+
+    private void RefreshSnapshot()
+    {
+        Hosts = MonitorState.GetSnapshot(_offlineThreshold).ToList();
+        foreach (var host in Hosts)
+        {
+            if (!Histories.TryGetValue(host.Info.Hostname, out var history))
+            {
+                history = new HistorySeries();
+                Histories[host.Info.Hostname] = history;
+            }
+
+            history.Points.Add(new HistoryPoint
+            {
+                TimeLabel = DateTime.Now.ToString("HH:mm:ss"),
+                Tx = host.Info.Dynamic.NetworkInfo.SentMbps,
+                Rx = host.Info.Dynamic.NetworkInfo.RecvMbps,
+                Cpu = host.Info.Dynamic.CpuInfo.Usage,
+                Memory = host.Info.Dynamic.MemoryInfo.Usage,
+                Disk = host.Info.Dynamic.DiskInfo.Percent
+            });
+
+            if (history.Points.Count > 60)
+            {
+                history.Points.RemoveAt(0);
+            }
+        }
+
+        if (CurrentHost != DashboardView && Hosts.All(x => !string.Equals(x.Info.Hostname, CurrentHost, StringComparison.OrdinalIgnoreCase)))
+        {
+            CurrentHost = DashboardView;
+        }
+    }
+
+    private async Task PushChartDataAsync(string host)
+    {
+        if (!Histories.TryGetValue(host, out var history))
+        {
+            return;
+        }
+
+        var info = Hosts.FirstOrDefault(x => string.Equals(x.Info.Hostname, host, StringComparison.OrdinalIgnoreCase))?.Info;
+        if (info is null)
+        {
+            return;
+        }
+
+        var points = history.Points.TakeLast(30).ToList();
+        await JS.InvokeVoidAsync("monitorCharts.update", new
+        {
+            cpu = info.Dynamic.CpuInfo.Usage,
+            memory = info.Dynamic.MemoryInfo.Usage,
+            disk = info.Dynamic.DiskInfo.Percent,
+            labels = points.Select(x => x.TimeLabel).ToList(),
+            tx = points.Select(x => x.Tx).ToList(),
+            rx = points.Select(x => x.Rx).ToList(),
+            cpuSeries = points.Select(x => x.Cpu).ToList(),
+            memorySeries = points.Select(x => x.Memory).ToList()
+        });
+    }
+
+    private static double ToGb(long bytes) => bytes / 1024d / 1024d / 1024d;
+
+    private void ShowDashboard()
+    {
+        CurrentHost = DashboardView;
+    }
+
+    private void SelectHost(string host)
+    {
+        CurrentHost = host;
+    }
+
+    private void ToggleAutoRefresh()
+    {
+        AutoRefresh = !AutoRefresh;
+        _ = JS.InvokeVoidAsync("monitorSettings.set", "autoRefresh", AutoRefresh);
+    }
+
+    private void ToggleAlertPanel()
+    {
+        ShowAlertPanel = !ShowAlertPanel;
+    }
+
+    private async Task LoadAlertSettings()
+    {
+        if (_http is null)
+        {
+            return;
+        }
+
+        var settings = await _http.GetFromJsonAsync<AlertSettings>("api/alerts/settings");
+        if (settings is not null)
+        {
+            AlertSettings = settings;
+        }
+    }
+
+    private async Task SaveAlertSettings()
+    {
+        if (_http is null)
+        {
+            return;
+        }
+
+        await _http.PostAsJsonAsync("api/alerts/settings", AlertSettings);
+    }
+
+    private static bool IsWarning(MonitoringInfo info)
+    {
+        return info.Dynamic.CpuInfo.Usage >= 60 || info.Dynamic.MemoryInfo.Usage >= 75 || info.Dynamic.DiskInfo.Percent >= 85;
+    }
+
+    private static bool IsCritical(MonitoringInfo info)
+    {
+        return info.Dynamic.CpuInfo.Usage >= 85 || info.Dynamic.MemoryInfo.Usage >= 90 || info.Dynamic.DiskInfo.Percent >= 95;
+    }
+
+    private void ManualRefresh()
+    {
+        RefreshSnapshot();
+        StateHasChanged();
+    }
+
+    public void Dispose()
+    {
+        MonitorState.Changed -= OnStateChanged;
+        _timerCts?.Cancel();
+        _refreshTimer?.Dispose();
+        _timerCts?.Dispose();
+    }
+
+    private sealed class HistorySeries
+    {
+        public List<HistoryPoint> Points { get; } = [];
+    }
+
+    private sealed class HistoryPoint
+    {
+        public string TimeLabel { get; set; } = string.Empty;
+        public double Tx { get; set; }
+        public double Rx { get; set; }
+        public double Cpu { get; set; }
+        public double Memory { get; set; }
+        public double Disk { get; set; }
+    }
+}

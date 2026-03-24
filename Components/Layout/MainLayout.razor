@@ -1,0 +1,31 @@
+@inherits LayoutComponentBase
+
+<div class="page">
+    <aside class="sidebar">
+        <NavMenu />
+    </aside>
+
+    <main>
+        <div class="top-row">
+            <div class="top-left">
+                <div class="top-kicker">Monitoring</div>
+                <div class="top-title">Infrastructure Dashboard</div>
+            </div>
+            <div class="top-right">
+                <span class="pill"><span class="dot"></span>Live Stream</span>
+                <span class="pill soft">Auto Refresh 5s</span>
+                <button type="button" class="theme-btn" onclick="themeManager.toggle()">Theme</button>
+            </div>
+        </div>
+
+        <article class="content">
+            @Body
+        </article>
+    </main>
+</div>
+
+<div id="blazor-error-ui" data-nosnippet>
+    An unhandled error has occurred.
+    <a href="." class="reload">Reload</a>
+    <span class="dismiss">x</span>
+</div>

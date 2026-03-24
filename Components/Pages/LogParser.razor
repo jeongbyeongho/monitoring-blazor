@@ -1,0 +1,616 @@
+@page "/log-parser"
+@using Monitoring.Blazor.Models
+@using Monitoring.Blazor.Services
+@inject IJSRuntime JS
+
+<PageTitle>IIS Log Parser</PageTitle>
+
+<div class="log-analyzer-page">
+<h1>Analyzer</h1>
+<p class="text-muted mb-3">Upload `iis.log` files and analyze by status, URL, method, and IP.</p>
+
+<div class="card mb-3">
+    <div class="card-body">
+        <InputFile OnChange="HandleFiles" multiple class="form-control mb-3" />
+        <div class="row g-2">
+            <div class="col-12 col-md-2">
+                <label class="form-label">Status Group</label>
+                <select class="form-select" value="@StatusGroup" @onchange="OnStatusGroupChanged">
+                    <option value="">All</option>
+                    <option value="2">2xx</option>
+                    <option value="3">3xx</option>
+                    <option value="4">4xx</option>
+                    <option value="5">5xx</option>
+                </select>
+            </div>
+            <div class="col-12 col-md-2">
+                <label class="form-label">Status Code</label>
+                <input class="form-control" value="@StatusCode" @oninput="OnStatusCodeChanged" placeholder="ex) 404" />
+            </div>
+            <div class="col-12 col-md-3">
+                <label class="form-label">URL Contains</label>
+                <input class="form-control" value="@UrlQuery" @oninput="OnUrlQueryChanged" placeholder="/api/users" />
+            </div>
+            <div class="col-12 col-md-2">
+                <label class="form-label">Method</label>
+                <input class="form-control" value="@MethodQuery" @oninput="OnMethodQueryChanged" placeholder="GET" />
+            </div>
+            <div class="col-12 col-md-3">
+                <label class="form-label">IP / Text Search</label>
+                <input class="form-control" value="@TextQuery" @oninput="OnTextQueryChanged" placeholder="192.168 or keyword" />
+            </div>
+            <div class="col-12 col-md-3">
+                <label class="form-label">Presets</label>
+                <div class="d-flex gap-2 flex-wrap">
+                    <button class="btn btn-sm btn-outline-secondary" @onclick='() => ApplyPreset("5xx")'>5xx</button>
+                    <button class="btn btn-sm btn-outline-secondary" @onclick='() => ApplyPreset("/api")'>/api</button>
+                    <button class="btn btn-sm btn-outline-secondary" @onclick='() => ApplyPreset("POST")'>POST</button>
+                    <button class="btn btn-sm btn-outline-secondary" @onclick="ClearFilters">Clear</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@{
+    var filtered = GetFilteredRows();
+    var paged = GetPagedRows(filtered);
+    var statusSummary = GetStatusSummary(filtered);
+    var topUrls = GetTopUrls(filtered, 8);
+}
+
+<div class="row g-3 mb-3">
+    <div class="col-12 col-md-4">
+        <div class="card h-100">
+            <div class="card-body">
+                <div class="metric-label">Total Requests</div>
+                <div class="metric-value">@filtered.Count.ToString("N0")</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-12 col-md-4">
+        <div class="card h-100">
+            <div class="card-body">
+                <div class="metric-label">Unique IPs</div>
+                <div class="metric-value">@filtered.Select(x => x.Ip).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-12 col-md-4">
+        <div class="card h-100">
+            <div class="card-body">
+                <div class="metric-label">Detected URLs</div>
+                <div class="metric-value">@filtered.Select(x => x.Uri).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase).Count().ToString("N0")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-3 mb-3">
+    <div class="col-12 col-xl-6">
+        <div class="card h-100">
+            <div class="card-header"><strong>Status Analysis</strong></div>
+            <div class="card-body">
+                <table class="table table-sm mb-0">
+                    <thead>
+                    <tr><th>Status</th><th class="text-end">Count</th></tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var item in statusSummary)
+                    {
+                        <tr>
+                            <td>@item.Key</td>
+                            <td class="text-end">@item.Value.ToString("N0")</td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    <div class="col-12 col-xl-6">
+        <div class="card h-100">
+            <div class="card-header"><strong>Top URLs</strong></div>
+            <div class="card-body">
+                <table class="table table-sm mb-0">
+                    <thead>
+                    <tr><th>URL</th><th class="text-end">Hits</th></tr>
+                    </thead>
+                    <tbody>
+                    @foreach (var item in topUrls)
+                    {
+                        <tr>
+                            <td class="text-truncate" style="max-width: 420px;" title="@item.Key">@item.Key</td>
+                            <td class="text-end">@item.Value.ToString("N0")</td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <strong>Log Entries</strong>
+        <div class="d-flex align-items-center gap-2">
+            <label class="form-label mb-0">Multi-sort</label>
+            <input type="checkbox" class="form-check-input" @bind="MultiSort" />
+            <label class="form-label mb-0">Rows</label>
+            <select class="form-select form-select-sm w-auto" value="@PageSize" @onchange="OnPageSizeChanged">
+                <option value="10">10</option>
+                <option value="25">25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+            </select>
+            <button class="btn btn-sm btn-outline-primary" @onclick="ExportToExcel">Export Excel</button>
+        </div>
+    </div>
+    <div class="table-responsive">
+        <table class="table table-sm table-striped mb-0">
+            <thead>
+            <tr>
+                <th><button class="btn btn-sm btn-link sort-btn" @onclick="() => ToggleSort(nameof(ParsedLogRow.Date))">Date @SortIcon(nameof(ParsedLogRow.Date))</button></th>
+                <th><button class="btn btn-sm btn-link sort-btn" @onclick="() => ToggleSort(nameof(ParsedLogRow.Time))">Time @SortIcon(nameof(ParsedLogRow.Time))</button></th>
+                <th><button class="btn btn-sm btn-link sort-btn" @onclick="() => ToggleSort(nameof(ParsedLogRow.Ip))">IP @SortIcon(nameof(ParsedLogRow.Ip))</button></th>
+                <th><button class="btn btn-sm btn-link sort-btn" @onclick="() => ToggleSort(nameof(ParsedLogRow.Method))">Method @SortIcon(nameof(ParsedLogRow.Method))</button></th>
+                <th><button class="btn btn-sm btn-link sort-btn" @onclick="() => ToggleSort(nameof(ParsedLogRow.Uri))">URI @SortIcon(nameof(ParsedLogRow.Uri))</button></th>
+                <th><button class="btn btn-sm btn-link sort-btn" @onclick="() => ToggleSort(nameof(ParsedLogRow.Status))">Status @SortIcon(nameof(ParsedLogRow.Status))</button></th>
+                <th><button class="btn btn-sm btn-link sort-btn" @onclick="() => ToggleSort(nameof(ParsedLogRow.Referrer))">Referer @SortIcon(nameof(ParsedLogRow.Referrer))</button></th>
+                <th><button class="btn btn-sm btn-link sort-btn" @onclick="() => ToggleSort(nameof(ParsedLogRow.UserAgent))">User-Agent @SortIcon(nameof(ParsedLogRow.UserAgent))</button></th>
+            </tr>
+            <tr class="table-filter-row">
+                <th><input class="form-control form-control-sm" @bind="DateFilter" @bind:event="oninput" placeholder="yyyy-mm-dd" /></th>
+                <th><input class="form-control form-control-sm" @bind="TimeFilter" @bind:event="oninput" placeholder="hh:mm" /></th>
+                <th><input class="form-control form-control-sm" @bind="IpFilter" @bind:event="oninput" placeholder="IP" /></th>
+                <th><input class="form-control form-control-sm" @bind="MethodFilter" @bind:event="oninput" placeholder="GET" /></th>
+                <th><input class="form-control form-control-sm" @bind="UriFilter" @bind:event="oninput" placeholder="/api" /></th>
+                <th><input class="form-control form-control-sm" @bind="StatusFilter" @bind:event="oninput" placeholder="200" /></th>
+                <th><input class="form-control form-control-sm" @bind="ReferrerFilter" @bind:event="oninput" placeholder="ref" /></th>
+                <th><input class="form-control form-control-sm" @bind="AgentFilter" @bind:event="oninput" placeholder="agent" /></th>
+            </tr>
+            </thead>
+            <tbody>
+            @foreach (var row in paged)
+            {
+                <tr class="@GetRowClass(row)">
+                    <td>@row.Date</td>
+                    <td>@row.Time</td>
+                    <td>@row.Ip</td>
+                    <td>@row.Method</td>
+                    <td class="text-truncate" style="max-width: 380px;" title="@row.Uri">@row.Uri</td>
+                    <td>@row.Status</td>
+                    <td class="text-truncate" style="max-width: 220px;" title="@row.Referrer">@row.Referrer</td>
+                    <td class="text-truncate" style="max-width: 260px;" title="@row.UserAgent">@row.UserAgent</td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    </div>
+
+    <div class="card-footer d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <div class="text-muted">Showing @GetStartIndex(filtered.Count)-@GetEndIndex(filtered.Count) of @filtered.Count rows</div>
+        <div class="d-flex align-items-center gap-2">
+            <button class="btn btn-sm btn-outline-primary" @onclick="PrevPage" disabled="@(CurrentPage <= 1)">Prev</button>
+            @foreach (var pageNumber in GetVisiblePages(filtered.Count))
+            {
+                <button class="btn btn-sm @(pageNumber == CurrentPage ? "btn-primary" : "btn-outline-secondary")" @onclick="() => GoToPage(pageNumber)">@pageNumber</button>
+            }
+            <button class="btn btn-sm btn-outline-primary" @onclick="() => NextPage(filtered.Count)" disabled="@(CurrentPage >= GetTotalPages(filtered.Count))">Next</button>
+        </div>
+    </div>
+</div>
+</div>
+
+@code {
+    private List<ParsedLogRow> AllRows { get; set; } = [];
+    private int CurrentPage { get; set; } = 1;
+    private int PageSize { get; set; } = 25;
+
+    private string StatusGroup { get; set; } = string.Empty;
+    private string StatusCode { get; set; } = string.Empty;
+    private string UrlQuery { get; set; } = string.Empty;
+    private string MethodQuery { get; set; } = string.Empty;
+    private string TextQuery { get; set; } = string.Empty;
+    private string DateFilter { get; set; } = string.Empty;
+    private string TimeFilter { get; set; } = string.Empty;
+    private string IpFilter { get; set; } = string.Empty;
+    private string MethodFilter { get; set; } = string.Empty;
+    private string UriFilter { get; set; } = string.Empty;
+    private string StatusFilter { get; set; } = string.Empty;
+    private string ReferrerFilter { get; set; } = string.Empty;
+    private string AgentFilter { get; set; } = string.Empty;
+    private bool MultiSort { get; set; } = false;
+    private List<SortSpec> Sorts { get; } = new()
+    {
+        new SortSpec(nameof(ParsedLogRow.Date), true)
+    };
+
+    private async Task HandleFiles(InputFileChangeEventArgs args)
+    {
+        var parsed = new List<ParsedLogRow>();
+        foreach (var file in args.GetMultipleFiles())
+        {
+            await using var stream = file.OpenReadStream(maxAllowedSize: 300 * 1024 * 1024);
+            using var reader = new StreamReader(stream);
+            var content = await reader.ReadToEndAsync();
+            parsed.AddRange(ApacheLogParser.ParseLines(content.Split(Environment.NewLine)));
+        }
+
+        AllRows = parsed;
+        CurrentPage = 1;
+    }
+
+    private List<ParsedLogRow> GetFilteredRows()
+    {
+        IEnumerable<ParsedLogRow> query = AllRows;
+
+        if (!string.IsNullOrWhiteSpace(StatusGroup))
+        {
+            query = query.Where(x => !string.IsNullOrWhiteSpace(x.Status) && x.Status.StartsWith(StatusGroup, StringComparison.Ordinal));
+        }
+
+        if (!string.IsNullOrWhiteSpace(StatusCode))
+        {
+            query = query.Where(x => string.Equals(x.Status, StatusCode.Trim(), StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (!string.IsNullOrWhiteSpace(UrlQuery))
+        {
+            query = query.Where(x => x.Uri.Contains(UrlQuery.Trim(), StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (!string.IsNullOrWhiteSpace(MethodQuery))
+        {
+            query = query.Where(x => x.Method.Contains(MethodQuery.Trim(), StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (!string.IsNullOrWhiteSpace(TextQuery))
+        {
+            var key = TextQuery.Trim();
+            query = query.Where(x =>
+                x.Ip.Contains(key, StringComparison.OrdinalIgnoreCase) ||
+                x.Uri.Contains(key, StringComparison.OrdinalIgnoreCase) ||
+                x.Referrer.Contains(key, StringComparison.OrdinalIgnoreCase) ||
+                x.UserAgent.Contains(key, StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (!string.IsNullOrWhiteSpace(DateFilter))
+        {
+            query = query.Where(x => x.Date.Contains(DateFilter.Trim(), StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (!string.IsNullOrWhiteSpace(TimeFilter))
+        {
+            query = query.Where(x => x.Time.Contains(TimeFilter.Trim(), StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (!string.IsNullOrWhiteSpace(IpFilter))
+        {
+            query = query.Where(x => x.Ip.Contains(IpFilter.Trim(), StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (!string.IsNullOrWhiteSpace(MethodFilter))
+        {
+            query = query.Where(x => x.Method.Contains(MethodFilter.Trim(), StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (!string.IsNullOrWhiteSpace(UriFilter))
+        {
+            query = query.Where(x => x.Uri.Contains(UriFilter.Trim(), StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (!string.IsNullOrWhiteSpace(StatusFilter))
+        {
+            query = query.Where(x => x.Status.Contains(StatusFilter.Trim(), StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (!string.IsNullOrWhiteSpace(ReferrerFilter))
+        {
+            query = query.Where(x => x.Referrer.Contains(ReferrerFilter.Trim(), StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (!string.IsNullOrWhiteSpace(AgentFilter))
+        {
+            query = query.Where(x => x.UserAgent.Contains(AgentFilter.Trim(), StringComparison.OrdinalIgnoreCase));
+        }
+
+        var filtered = query.ToList();
+        return ApplySort(filtered);
+    }
+
+    private List<ParsedLogRow> GetPagedRows(List<ParsedLogRow> filtered)
+    {
+        var totalPages = GetTotalPages(filtered.Count);
+        if (CurrentPage > totalPages)
+        {
+            CurrentPage = totalPages;
+        }
+
+        if (CurrentPage < 1)
+        {
+            CurrentPage = 1;
+        }
+
+        return filtered
+            .Skip((CurrentPage - 1) * PageSize)
+            .Take(PageSize)
+            .ToList();
+    }
+
+    private static List<KeyValuePair<string, int>> GetStatusSummary(List<ParsedLogRow> filtered)
+    {
+        return filtered
+            .Where(x => !string.IsNullOrWhiteSpace(x.Status))
+            .GroupBy(x => x.Status)
+            .Select(g => new KeyValuePair<string, int>(g.Key, g.Count()))
+            .OrderByDescending(x => x.Value)
+            .ThenBy(x => x.Key, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    private static List<KeyValuePair<string, int>> GetTopUrls(List<ParsedLogRow> filtered, int take)
+    {
+        return filtered
+            .Where(x => !string.IsNullOrWhiteSpace(x.Uri))
+            .GroupBy(x => x.Uri)
+            .Select(g => new KeyValuePair<string, int>(g.Key, g.Count()))
+            .OrderByDescending(x => x.Value)
+            .Take(take)
+            .ToList();
+    }
+
+    private int GetTotalPages(int count)
+    {
+        if (count == 0)
+        {
+            return 1;
+        }
+
+        return (int)Math.Ceiling(count / (double)PageSize);
+    }
+
+    private int GetStartIndex(int count) => count == 0 ? 0 : ((CurrentPage - 1) * PageSize) + 1;
+
+    private int GetEndIndex(int count) => Math.Min(CurrentPage * PageSize, count);
+
+    private IEnumerable<int> GetVisiblePages(int count)
+    {
+        var totalPages = GetTotalPages(count);
+        var start = Math.Max(1, CurrentPage - 2);
+        var end = Math.Min(totalPages, start + 4);
+
+        if (end - start < 4)
+        {
+            start = Math.Max(1, end - 4);
+        }
+
+        for (var i = start; i <= end; i++)
+        {
+            yield return i;
+        }
+    }
+
+    private void PrevPage()
+    {
+        if (CurrentPage > 1)
+        {
+            CurrentPage--;
+        }
+    }
+
+    private void NextPage(int count)
+    {
+        var totalPages = GetTotalPages(count);
+        if (CurrentPage < totalPages)
+        {
+            CurrentPage++;
+        }
+    }
+
+    private void GoToPage(int page) => CurrentPage = page;
+
+    private void OnStatusGroupChanged(ChangeEventArgs e)
+    {
+        StatusGroup = e.Value?.ToString() ?? string.Empty;
+        ResetPage();
+    }
+
+    private void OnStatusCodeChanged(ChangeEventArgs e)
+    {
+        StatusCode = e.Value?.ToString() ?? string.Empty;
+        ResetPage();
+    }
+
+    private void OnUrlQueryChanged(ChangeEventArgs e)
+    {
+        UrlQuery = e.Value?.ToString() ?? string.Empty;
+        ResetPage();
+    }
+
+    private void OnMethodQueryChanged(ChangeEventArgs e)
+    {
+        MethodQuery = e.Value?.ToString() ?? string.Empty;
+        ResetPage();
+    }
+
+    private void OnTextQueryChanged(ChangeEventArgs e)
+    {
+        TextQuery = e.Value?.ToString() ?? string.Empty;
+        ResetPage();
+    }
+
+    private void OnPageSizeChanged(ChangeEventArgs e)
+    {
+        var value = e.Value?.ToString();
+        if (int.TryParse(value, out var parsed) && parsed > 0)
+        {
+            PageSize = parsed;
+            ResetPage();
+        }
+    }
+
+    private void ResetPage() => CurrentPage = 1;
+
+    private static string GetRowClass(ParsedLogRow row)
+    {
+        if (row.Status.StartsWith("5", StringComparison.Ordinal))
+        {
+            return "table-danger";
+        }
+
+        if (row.Status.StartsWith("4", StringComparison.Ordinal))
+        {
+            return "table-warning";
+        }
+
+        return string.Empty;
+    }
+
+    private List<ParsedLogRow> ApplySort(List<ParsedLogRow> rows)
+    {
+        if (Sorts.Count == 0)
+        {
+            return rows;
+        }
+
+        IOrderedEnumerable<ParsedLogRow>? ordered = null;
+        foreach (var spec in Sorts)
+        {
+            Func<ParsedLogRow, string> selector = spec.Column switch
+            {
+                nameof(ParsedLogRow.Time) => r => r.Time ?? string.Empty,
+                nameof(ParsedLogRow.Ip) => r => r.Ip ?? string.Empty,
+                nameof(ParsedLogRow.Method) => r => r.Method ?? string.Empty,
+                nameof(ParsedLogRow.Uri) => r => r.Uri ?? string.Empty,
+                nameof(ParsedLogRow.Status) => r => r.Status ?? string.Empty,
+                nameof(ParsedLogRow.Referrer) => r => r.Referrer ?? string.Empty,
+                nameof(ParsedLogRow.UserAgent) => r => r.UserAgent ?? string.Empty,
+                _ => r => r.Date ?? string.Empty
+            };
+
+            ordered = ordered is null
+                ? (spec.Ascending
+                    ? rows.OrderBy(selector, StringComparer.OrdinalIgnoreCase)
+                    : rows.OrderByDescending(selector, StringComparer.OrdinalIgnoreCase))
+                : (spec.Ascending
+                    ? ordered.ThenBy(selector, StringComparer.OrdinalIgnoreCase)
+                    : ordered.ThenByDescending(selector, StringComparer.OrdinalIgnoreCase));
+        }
+
+        return ordered?.ToList() ?? rows;
+    }
+
+    private void ToggleSort(string column)
+    {
+        var existing = Sorts.FirstOrDefault(x => x.Column == column);
+        if (existing is not null)
+        {
+            existing.Ascending = !existing.Ascending;
+        }
+        else
+        {
+            if (!MultiSort)
+            {
+                Sorts.Clear();
+            }
+            Sorts.Add(new SortSpec(column, true));
+        }
+    }
+
+    private string SortIcon(string column)
+    {
+        var existing = Sorts.FirstOrDefault(x => x.Column == column);
+        if (existing is null)
+        {
+            return "^v";
+        }
+
+        return existing.Ascending ? "^" : "v";
+    }
+
+    private void ApplyPreset(string preset)
+    {
+        ResetPage();
+        switch (preset)
+        {
+            case "5xx":
+                StatusGroup = "5";
+                StatusFilter = "5";
+                break;
+            case "/api":
+                UriFilter = "/api";
+                break;
+            case "POST":
+                MethodFilter = "POST";
+                break;
+        }
+    }
+
+    private void ClearFilters()
+    {
+        StatusGroup = string.Empty;
+        StatusCode = string.Empty;
+        UrlQuery = string.Empty;
+        MethodQuery = string.Empty;
+        TextQuery = string.Empty;
+        DateFilter = string.Empty;
+        TimeFilter = string.Empty;
+        IpFilter = string.Empty;
+        MethodFilter = string.Empty;
+        UriFilter = string.Empty;
+        StatusFilter = string.Empty;
+        ReferrerFilter = string.Empty;
+        AgentFilter = string.Empty;
+        ResetPage();
+    }
+
+    private sealed class SortSpec
+    {
+        public SortSpec(string column, bool ascending)
+        {
+            Column = column;
+            Ascending = ascending;
+        }
+
+        public string Column { get; }
+        public bool Ascending { get; set; }
+    }
+
+    private async Task ExportToExcel()
+    {
+        var rows = GetFilteredRows();
+        var header = "date,time,ip,method,uri,status,referrer,user_agent";
+        var lines = new List<string> { header };
+
+        foreach (var row in rows)
+        {
+            lines.Add(string.Join(separator: ",", new[]
+            {
+                Csv(row.Date),
+                Csv(row.Time),
+                Csv(row.Ip),
+                Csv(row.Method),
+                Csv(row.Uri),
+                Csv(row.Status),
+                Csv(row.Referrer),
+                Csv(row.UserAgent)
+            }));
+        }
+
+        var csv = "\uFEFF" + string.Join("\n", lines);
+        await JS.InvokeVoidAsync("exporter.download", "log-export.csv", csv);
+    }
+
+    private static string Csv(string? value)
+    {
+        var v = value ?? string.Empty;
+        if (v.Contains('"') || v.Contains(',') || v.Contains('\n') || v.Contains('\r'))
+        {
+            v = v.Replace("\"", "\"\"");
+            return $"\"{v}\"";
+        }
+        return v;
+    }
+}
